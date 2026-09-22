@@ -1,56 +1,67 @@
 # WhatsApp Voice Logger — Phase 1
 
-WhatsApp group එකේ voice messages අල්ලගෙන, Gemini එකෙන් transcript කරලා,
-Google Sheet එකකට දාන bot එකක්.
+A bot that captures voice messages from a WhatsApp group, transcribes them
+with Gemini, and logs them to a Google Sheet.
 
-**Phase 1 එකේ task extraction නෑ.** Transcript එක විතරයි. ඒක දවස් 3–5ක්
-run කරලා quality එක බැලුවට පස්සේ තමයි tasks එකතු කරන්නේ.
+**Phase 1 does not include task extraction.** It only records the transcript.
+After running it for 3–5 days and reviewing the quality, task extraction will
+be added.
 
 ---
 
-## 1. පෙර සූදානම
+## 1. Prerequisites
 
 ```bash
 npm install
 cp .env.example .env
+cp roster.example.json roster.json
 ```
 
-Node.js 20+ ඕන.
+On **Windows (Command Prompt)**, use `copy` instead of `cp`:
+
+```cmd
+npm install
+copy .env.example .env
+copy roster.example.json roster.json
+```
+
+Requires Node.js 20+.
 
 ---
 
-## 2. Gemini API key එක
+## 2. Gemini API key
 
-1. https://aistudio.google.com/apikey — key එකක් හදාගන්න
-2. `.env` එකේ `GEMINI_API_KEY` එකට දාන්න
+1. Create a key at https://aistudio.google.com/apikey
+2. Add it to `GEMINI_API_KEY` in `.env`
 
 ---
 
-## 3. Google Sheet එක
+## 3. Google Sheet
 
-**Sheet එක හදන එක:**
+**Creating the sheet:**
 
-1. අලුත් Google Sheet එකක් හදන්න
-2. URL එකෙන් ID එක ගන්න:
-   `docs.google.com/spreadsheets/d/`**`මේ කොටස`**`/edit`
-3. `.env` එකේ `SHEET_ID` එකට දාන්න
+1. Create a new Google Sheet
+2. Copy the ID from the URL:
+   `docs.google.com/spreadsheets/d/`**`this part`**`/edit`
+3. Add it to `SHEET_ID` in `.env`
 
-**Service account එක:**
+**Service account:**
 
-1. https://console.cloud.google.com → project එකක් හදන්න
+1. Go to https://console.cloud.google.com → create a project
 2. **APIs & Services → Library → Google Sheets API → Enable**
 3. **Credentials → Create credentials → Service account**
-4. හදාපු account එක click කරලා → **Keys → Add key → JSON**
-5. Download වෙන file එක `credentials.json` කියලා මේ folder එකට දාන්න
-6. JSON එකේ තියෙන `client_email` එක copy කරලා,
-   **Sheet එකට Editor විදිහට share කරන්න** ← මේක අමතක කරන්න එපා
+4. Click the new account → **Keys → Add key → JSON**
+5. Rename the downloaded file to `credentials.json` and place it in this folder
+6. Copy the `client_email` from the JSON file and
+   **share the Sheet with it as an Editor** ← don't forget this step
 
 ---
 
-## 4. Roster එක
+## 4. Roster
 
-`roster.json` එකේ ඔයාගේ office එකේ කට්ටියගේ numbers දාන්න.
-රටේ code එක එක්ක, `+` හෝ space නැතුව:
+`roster.json` is not included in the repository because it contains personal
+phone numbers. Create it from the example file (see step 1), then add your
+team members' numbers. Include the country code, without `+` or spaces:
 
 ```json
 {
@@ -58,65 +69,77 @@ Node.js 20+ ඕන.
 }
 ```
 
-Roster එකේ නැති කෙනෙක් voice දැම්මොත් `Unknown (94xxxxxxxxx)` කියලා
-sheet එකට එනවා — ඒකෙන් අලුත් අය හොයාගන්න පුළුවන්.
+If someone not in the roster sends a voice message, it appears in the sheet
+as `Unknown (94xxxxxxxxx)` — this helps you identify new members.
 
 ---
 
-## 5. Group ID එක
+## 5. Group ID
 
 ```bash
 npm run groups
 ```
 
-QR එක scan කරන්න (WhatsApp → Linked devices → Link a device).
-Groups list එක එනවා. ඔයාගේ group එකේ id එක `.env` එකේ `GROUP_ID` එකට දාන්න.
+Scan the QR code (WhatsApp → Linked devices → Link a device).
+
+**On the first scan, the connection will close with a `restart required`
+message. This is normal** — WhatsApp requires one restart after pairing.
+**Do not delete the `auth/` folder.** Simply run the command again:
+
+```bash
+npm run groups
+```
+
+This time it connects without a QR code and shows the list of groups.
+Copy your group's ID into `GROUP_ID` in `.env`.
 
 ---
 
-## 6. Run කරන්න
+## 6. Run
 
 ```bash
 npm start
 ```
 
-දැන් group එකට voice එකක් දාලා බලන්න. Sheet එකට row එකක් එන්න ඕන.
+Send a voice message to the group to test. A new row should appear in the sheet.
 
 ---
 
-## Sheet එකේ columns
+## Sheet columns
 
-| Column | කුමක්ද |
+| Column | Description |
 |---|---|
-| Session (time) | Timestamp එක අනුව MORNING/EVENING |
-| Session (AI) | Content එක අනුව Gemini හිතන එක |
-| Match? | දෙක නොගැලපේ නම් `⚠️ CHECK` |
+| Session (time) | MORNING/EVENING based on the timestamp |
+| Session (AI) | Gemini's assessment based on the content |
+| Match? | `⚠️ CHECK` if the two don't match |
 | Audio quality | GOOD / FAIR / POOR |
-| Unclear marks | Transcript එකේ `[?]` ගණන |
+| Unclear marks | Number of `[?]` marks in the transcript |
 
-**Phase 1 එකේදී බලන්න ඕන:** `Unclear marks` වැඩිද? `POOR` ගොඩක් තියෙනවද?
-`⚠️ CHECK` කී පාරක් එනවද? මේවා තමයි Phase 2 එකට යන්න කලින් හදාගන්න ඕන.
-
----
-
-## දැනගන්න ඕන දේවල්
-
-- **Dedicated SIM එකක් පාවිච්චි කරන්න.** Baileys කියන්නේ unofficial library
-  එකක්. Office එකේ main number එක ban වුණොත් අවුල්.
-- **VPS එකක් ඕන.** Laptop එක වහපුවම bot එක නතර වෙනවා.
-  DigitalOcean/Hetzner $5/මාසෙට ඇති. `pm2` එකෙන් run කරන්න.
-- **`auth/` folder එක backup කරගන්න.** ඒක නැති වුණොත් ආපහු QR scan කරන්න ඕන.
-- **`.env`, `credentials.json`, `auth/` — git එකට දාන්න එපා.**
-- **කට්ටියට කියන්න.** ඔවුන්ගේ voice messages process වෙනවා කියලා
-  කලින්ම දැනුම් දෙන්න.
+**What to watch during Phase 1:** Are `Unclear marks` high? Are there many
+`POOR` ratings? How often does `⚠️ CHECK` appear? These should be addressed
+before moving to Phase 2.
 
 ---
 
-## අවුලක් ආවොත්
+## Important notes
 
-| ප්‍රශ්නය | විසඳුම |
+- **Use a dedicated SIM.** Baileys is an unofficial library. If the office's
+  main number gets banned, it will cause problems.
+- **A VPS is required.** The bot stops when the laptop is closed.
+  A $5/month DigitalOcean/Hetzner server is enough. Run it with `pm2`.
+- **Back up the `auth/` folder.** If it's lost, you'll need to scan the QR code again.
+- **Never commit `.env`, `credentials.json`, `roster.json`, or `auth/` to git.**
+- **Inform the team.** Let everyone know in advance that their voice messages
+  will be processed.
+
+---
+
+## Troubleshooting
+
+| Problem | Solution |
 |---|---|
-| `The caller does not have permission` | Sheet එක service account email එකට share කරලා නෑ |
-| `Unable to parse range` | Sheet tab එකේ නම default `Sheet1` ද කියලා බලන්න |
-| QR එක ආපහු ආපහු එනවා | `auth/` folder එක delete කරලා ආපහු try කරන්න |
-| Transcript එක හිස් | `failed/` folder එකේ `.ogg` file එක බලන්න |
+| `The caller does not have permission` | The Sheet hasn't been shared with the service account email |
+| `Unable to parse range` | Check that the sheet tab name is the default `Sheet1` |
+| `restart required` after the first QR scan | Normal — run the command again without deleting `auth/` |
+| QR code keeps reappearing / `logged out` | Delete the `auth/` folder and try again |
+| Empty transcript | Check the `.ogg` file in the `failed/` folder |

@@ -20,7 +20,7 @@ async function getApi () {
   return sheetsApi
 }
 
-/** Header row eka nathnam daanawa. Palamu paara vitharak wada karanawa. */
+/** Add the header row if it doesn't exist. Only runs on the first start. */
 export async function ensureHeaders () {
   const api = await getApi()
   const res = await api.spreadsheets.values.get({
@@ -39,7 +39,7 @@ export async function ensureHeaders () {
   console.log('✅ Header row added')
 }
 
-/** Row ekak sheet eke agata daanawa. */
+/** Append a row to the end of the sheet. */
 export async function appendRow (row) {
   const api = await getApi()
   await api.spreadsheets.values.append({

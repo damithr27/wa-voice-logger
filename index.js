@@ -20,7 +20,7 @@ const M_END = +process.env.MORNING_END || 12
 const E_START = +process.env.EVENING_START || 13
 const E_END = +process.env.EVENING_END || 24
 
-/** Timestamp eken session eka thiranaya karanawa (Asia/Colombo). */
+/** Determine the session from the message hour (Asia/Colombo). */
 function sessionFromHour (hour) {
   if (hour >= M_START && hour < M_END) return 'MORNING'
   if (hour >= E_START && hour < E_END) return 'EVENING'
@@ -43,17 +43,17 @@ function colomboParts (date) {
 }
 
 /**
- * Sender kawda kiyala hoyanawa.
- * WhatsApp groups dan "LID" (hidden id) ekak dena nisa,
- * phone number eka thiyena fields okkoma try karanawa.
+ * Identify who sent the message.
+ * WhatsApp groups now use a hidden "LID" identifier for privacy,
+ * so we check every field that might contain the real phone number.
  */
 function identifySender (msg) {
   const k = msg.key
   const candidates = [
-    k.participantPn,        // aluth Baileys — real phone number
+    k.participantPn,        // newer Baileys — real phone number
     k.participantAlt,
     k.senderPn,
-    k.participant,          // meka LID ekak wenna puluwan
+    k.participant,          // may be a LID
     k.remoteJid
   ].filter(Boolean)
 
@@ -63,7 +63,7 @@ function identifySender (msg) {
   const phone = phoneJid ? phoneJid.split('@')[0].split(':')[0] : null
   const lid = lidJid ? lidJid.split('@')[0] : null
 
-  // Roster eke phone eka hari LID eka hari thiyenawanam nama ganna
+  // Look up the name in the roster by phone number or LID
   const name = (phone && roster[phone]) || (lid && roster[lid]) || null
   const id = phone || lid || candidates[0]?.split('@')[0] || 'unknown'
 
@@ -85,7 +85,7 @@ async function handleVoice (msg, sock) {
   const name = sender.name || `Unknown (${phone})`
   console.log(`🎤 ${name} — ${sessionByTime} @ ${time}`)
   if (!sender.name) {
-    console.log(`   ℹ️  roster.json ekata add karanna:  "${phone}": "Nama"`)
+    console.log(`   ℹ️  Add to roster.json:  "${phone}": "Name"`)
     if (sender.lid && sender.phone) console.log(`      (LID: ${sender.lid})`)
   }
 
@@ -111,7 +111,7 @@ async function handleVoice (msg, sock) {
     console.log(`   ✅ saved — ${result.audio_quality}, ${result.unclear_count} unclear${flag}`)
   } catch (err) {
     console.error(`   ❌ failed for ${name}:`, err.message)
-    // Aye try karanna puluwan wenna audio eka save karanawa
+    // Save the audio so it can be retried later
     fs.mkdirSync('./failed', { recursive: true })
     try {
       const buf = await downloadMediaMessage(msg, 'buffer', {})
@@ -127,7 +127,7 @@ async function start () {
   const sock = makeWASocket({
     auth: state,
     logger: pino({ level: 'silent' }),
-    markOnlineOnConnect: false // Phone eke notifications nathi wenna
+    markOnlineOnConnect: false // Keep phone notifications working
   })
 
   sock.ev.on('creds.update', saveCreds)

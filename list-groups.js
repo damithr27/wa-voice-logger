@@ -3,7 +3,7 @@ import makeWASocket, { useMultiFileAuthState } from '@whiskeysockets/baileys'
 import qrcode from 'qrcode-terminal'
 import pino from 'pino'
 
-// Group ID eka hoyaganna witharai. `npm run groups` kiyala run karanna.
+// Only used to find the group ID. Run with `npm run groups`.
 
 const { state, saveCreds } = await useMultiFileAuthState('./auth')
 const sock = makeWASocket({ auth: state, logger: pino({ level: 'silent' }) })
@@ -12,7 +12,7 @@ sock.ev.on('creds.update', saveCreds)
 
 sock.ev.on('connection.update', async ({ connection, qr }) => {
   if (qr) {
-    console.log('\n📱 Scan karanna:\n')
+    console.log('\n📱 Scan this QR code:\n')
     qrcode.generate(qr, { small: true })
   }
   if (connection === 'open') {
@@ -26,7 +26,7 @@ sock.ev.on('connection.update', async ({ connection, qr }) => {
       console.log(`  (${g.participants.length} members)\n`)
     }
 
-    console.log('Oyage group eke id eka .env eke GROUP_ID ekata copy karanna.\n')
+    console.log('Copy your group ID into GROUP_ID in the .env file.\n')
     process.exit(0)
   }
 })
