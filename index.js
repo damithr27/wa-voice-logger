@@ -20,6 +20,9 @@ const M_END = +process.env.MORNING_END || 12
 const E_START = +process.env.EVENING_START || 13
 const E_END = +process.env.EVENING_END || 24
 
+// Ignore very short messages like "ok" or a single emoji
+const MIN_TEXT_LENGTH = +process.env.MIN_TEXT_LENGTH || 10
+
 /** Determine the session from the message hour (Asia/Colombo). */
 function sessionFromHour (hour) {
   if (hour >= M_START && hour < M_END) return 'MORNING'
@@ -70,6 +73,14 @@ function identifySender (msg) {
   return { id, phone, lid, name }
 }
 
+/** Extract plain text from a message, if it has any. */
+function extractText (msg) {
+  const m = msg.message
+  return m?.conversation
+    || m?.extendedTextMessage?.text
+    || null
+}
+
 async function handleVoice (msg, sock) {
   const sender = identifySender(msg)
   const phone = sender.id
@@ -104,7 +115,8 @@ async function handleVoice (msg, sock) {
       transcript: result.transcript,
       audioQuality: result.audio_quality,
       unclearCount: result.unclear_count,
-      duration: msg.message.audioMessage.seconds || ''
+      duration: msg.message.audioMessage.seconds || '',
+      type: 'VOICE'
     })
 
     const flag = sessionByTime !== result.detected_session ? ' ⚠️ session mismatch' : ''
@@ -117,6 +129,46 @@ async function handleVoice (msg, sock) {
       const buf = await downloadMediaMessage(msg, 'buffer', {})
       fs.writeFileSync(`./failed/${phone}-${Date.now()}.ogg`, buf)
     } catch {}
+  }
+}
+
+async function handleText (msg, text) {
+  const sender = identifySender(msg)
+  const phone = sender.id
+  const when = new Date(Number(msg.messageTimestamp) * 1000)
+  const { date, time, hour } = colomboParts(when)
+
+  const sessionByTime = sessionFromHour(hour)
+  if (!sessionByTime) {
+    console.log(`⏭️  ${phone} @ ${time} — dead zone, skipped`)
+    return
+  }
+
+  const name = sender.name || `Unknown (${phone})`
+  console.log(`💬 ${name} — ${sessionByTime} @ ${time}`)
+  if (!sender.name) {
+    console.log(`   ℹ️  Add to roster.json:  "${phone}": "Name"`)
+  }
+
+  try {
+    // Text is saved exactly as written — no AI call needed
+    await appendRow({
+      timestamp: when.toISOString(),
+      date,
+      time,
+      name,
+      phone,
+      sessionByTime,
+      sessionByAI: 'N/A',
+      transcript: text,
+      audioQuality: '-',
+      unclearCount: 0,
+      duration: '',
+      type: 'TEXT'
+    })
+    console.log(`   ✅ saved — ${text.length} characters`)
+  } catch (err) {
+    console.error(`   ❌ failed for ${name}:`, err.message)
   }
 }
 
@@ -154,8 +206,16 @@ async function start () {
     for (const msg of messages) {
       if (msg.key.remoteJid !== GROUP_ID) continue
       if (msg.key.fromMe) continue
-      if (!msg.message?.audioMessage) continue
-      await handleVoice(msg, sock)
+
+      if (msg.message?.audioMessage) {
+        await handleVoice(msg, sock)
+        continue
+      }
+
+      const text = extractText(msg)
+      if (text && text.trim().length >= MIN_TEXT_LENGTH) {
+        await handleText(msg, text.trim())
+      }
     }
   })
 }

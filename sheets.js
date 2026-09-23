@@ -3,7 +3,7 @@ import { google } from 'googleapis'
 const HEADERS = [
   'Timestamp', 'Date', 'Time', 'Name', 'Phone',
   'Session (time)', 'Session (AI)', 'Match?',
-  'Transcript', 'Audio quality', 'Unclear marks', 'Duration (s)'
+  'Transcript', 'Audio quality', 'Unclear marks', 'Duration (s)', 'Type'
 ]
 
 let sheetsApi = null
@@ -20,15 +20,16 @@ async function getApi () {
   return sheetsApi
 }
 
-/** Add the header row if it doesn't exist. Only runs on the first start. */
+/** Add or update the header row. Also extends older sheets with new columns. */
 export async function ensureHeaders () {
   const api = await getApi()
   const res = await api.spreadsheets.values.get({
     spreadsheetId: process.env.SHEET_ID,
-    range: 'A1:L1'
+    range: 'A1:M1'
   })
 
-  if (res.data.values?.length) return
+  const existing = res.data.values?.[0] || []
+  if (existing.length === HEADERS.length) return
 
   await api.spreadsheets.values.update({
     spreadsheetId: process.env.SHEET_ID,
@@ -36,15 +37,21 @@ export async function ensureHeaders () {
     valueInputOption: 'RAW',
     requestBody: { values: [HEADERS] }
   })
-  console.log('✅ Header row added')
+  console.log(existing.length ? '✅ Header row updated' : '✅ Header row added')
 }
 
 /** Append a row to the end of the sheet. */
 export async function appendRow (row) {
   const api = await getApi()
+
+  // Text messages have no AI session detection, so there is nothing to compare
+  const match = row.sessionByAI === 'N/A'
+    ? '-'
+    : (row.sessionByTime === row.sessionByAI ? 'OK' : '⚠️ CHECK')
+
   await api.spreadsheets.values.append({
     spreadsheetId: process.env.SHEET_ID,
-    range: 'A:L',
+    range: 'A:M',
     valueInputOption: 'RAW',
     insertDataOption: 'INSERT_ROWS',
     requestBody: {
@@ -56,11 +63,12 @@ export async function appendRow (row) {
         row.phone,
         row.sessionByTime,
         row.sessionByAI,
-        row.sessionByTime === row.sessionByAI ? 'OK' : '⚠️ CHECK',
+        match,
         row.transcript,
         row.audioQuality,
         row.unclearCount,
-        row.duration
+        row.duration,
+        row.type
       ]]
     }
   })
