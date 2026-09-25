@@ -2,27 +2,28 @@ import { GoogleGenAI } from '@google/genai'
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY })
 const MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash'
-// Main model eka busy nam meka try karanawa
+// Backup model used when the main model is busy
 const FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || 'gemini-3.5-flash'
 
-// Aye try karanna puluwan errors (Google side temporary)
+// Temporary server-side errors that are safe to retry
 const RETRYABLE = [429, 500, 503, 504]
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 
 const PROMPT = `
-මේ audio එකේ කියන දේ ඒ විදිහටම transcript කරන්න.
+Transcribe exactly what is said in this audio.
 
-- කතා කරන්නේ ශ්‍රී ලාංකික කාර්යාල සේවකයෙක්. සිංහල, හෝ සිංහල+ඉංග්‍රීසි මිශ්‍ර.
-- ඉංග්‍රීසි වචන ඉංග්‍රීසියෙන්ම ලියන්න. පරිවර්තනය කරන්න එපා.
-- සිංහල කොටස් සිංහල අකුරෙන් ලියන්න.
-- අහගන්න බැරි තැන් [?] කියලා දාන්න. අනුමාන කරන්න එපා.
-- සාරාංශයක් දෙන්න එපා.
+- The speaker is a Sri Lankan office employee speaking in Sinhala, or a mix of
+  Sinhala and English.
+- Write English words in English. Do not translate them.
+- Write Sinhala parts in Sinhala script.
+- Mark any inaudible parts as [?]. Do not guess.
+- Do not summarize.
 
-මේවත් දෙන්න:
-- detected_session: අන්තර්ගතය අනුව මේක උදේ plan එකක්ද (MORNING),
-  හවස කරපු වැඩ ගැන වාර්තාවක්ද (EVENING), නැත්නම් පැහැදිලි නෑද (UNCLEAR).
+Also provide:
+- detected_session: based on the content, whether this is a morning plan (MORNING),
+  an evening report of completed work (EVENING), or unclear (UNCLEAR).
 - audio_quality: GOOD / FAIR / POOR
-- unclear_count: [?] කීයක් දැම්මාද
+- unclear_count: the number of [?] marks used
 `.trim()
 
 const SCHEMA = {
@@ -64,8 +65,8 @@ function errorCode (err) {
 }
 
 /**
- * Voice note buffer ekak Gemini ekata dila transcript eka ganna.
- * Busy nam 3 paarak aye try karanawa, eeth bari nam backup model eka.
+ * Send a voice note buffer to Gemini and return the transcript.
+ * Retries briefly; longer retries are handled by the queue.
  */
 export async function transcribe (buffer) {
   // Short, quick attempts only. Longer waits are handled by the queue,
@@ -80,17 +81,17 @@ export async function transcribe (buffer) {
   for (let i = 0; i < plan.length; i++) {
     const { model, wait } = plan[i]
     if (wait) {
-      console.log(`   ⏳ ${wait / 1000}s inna, aye try karanawa (${model})...`)
+      console.log(`   ⏳ Waiting ${wait / 1000}s before retrying (${model})...`)
       await sleep(wait)
     }
     try {
       const result = await callModel(model, buffer)
-      if (model !== MODEL) console.log(`   ↪️  backup model eken hari giya (${model})`)
+      if (model !== MODEL) console.log(`   ↪️  Succeeded with backup model (${model})`)
       return result
     } catch (err) {
       lastErr = err
       const code = errorCode(err)
-      // 400, 401, 403 wage ewa aye try karala wadak na — code/key prashnayak
+      // Errors like 400, 401, 403 are code/key problems — retrying won't help
       if (code && !RETRYABLE.includes(code)) throw err
     }
   }
