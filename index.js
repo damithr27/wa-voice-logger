@@ -9,10 +9,10 @@ import qrcode from 'qrcode-terminal'
 import pino from 'pino'
 import fs from 'node:fs'
 
-import { transcribe } from './gemini.js'
-import { ensureHeaders, appendRow } from './sheets.js'
+import { recordUpdate } from './sheets.js'
+import { enqueueVoice, startQueue } from './queue.js'
 
-const roster = JSON.parse(fs.readFileSync('./roster.json', 'utf8'))
+const team = JSON.parse(fs.readFileSync('./team.json', 'utf8'))
 const GROUP_ID = process.env.GROUP_ID
 
 const M_START = +process.env.MORNING_START || 5
@@ -22,6 +22,13 @@ const E_END = +process.env.EVENING_END || 24
 
 // Ignore very short messages like "ok" or a single emoji
 const MIN_TEXT_LENGTH = +process.env.MIN_TEXT_LENGTH || 10
+
+// Build a lookup of every id (phone number or LID) to the person's name
+const nameById = new Map()
+for (const p of team) {
+  for (const id of p.ids || []) nameById.set(String(id), p.name)
+}
+console.log(`👥 ${team.length} people loaded, ${nameById.size} ids mapped`)
 
 /** Determine the session from the message hour (Asia/Colombo). */
 function sessionFromHour (hour) {
@@ -66,8 +73,8 @@ function identifySender (msg) {
   const phone = phoneJid ? phoneJid.split('@')[0].split(':')[0] : null
   const lid = lidJid ? lidJid.split('@')[0] : null
 
-  // Look up the name in the roster by phone number or LID
-  const name = (phone && roster[phone]) || (lid && roster[lid]) || null
+  // Match against team.json by phone number or LID
+  const name = (phone && nameById.get(phone)) || (lid && nameById.get(lid)) || null
   const id = phone || lid || candidates[0]?.split('@')[0] || 'unknown'
 
   return { id, phone, lid, name }
@@ -81,99 +88,110 @@ function extractText (msg) {
     || null
 }
 
-async function handleVoice (msg, sock) {
+// Words that mean a half day, in English, Sinhala and Singlish
+const HALF_DAY_PATTERNS = [
+  /\bhalf[- ]?day\b/i,
+  /අර්ධ\s*දින/,
+  /හාෆ්\s*ඩේ/,
+  /\bhaf?[- ]?day\b/i
+]
+
+// Words that mean the person is on leave
+const LEAVE_PATTERNS = [
+  /\bleaves?\b/i,              // leave, Leave, LEAVE
+  /\bon leave\b/i,
+  /නිවාඩු/,                     // nivadu, nivaduwa, nivaduwak
+  /\bni[vw]a?ad?u\b/i          // niwadu, nivadu
+]
+
+/**
+ * Work out whether a message says the person is on leave.
+ * Returns 'Half Day', 'Leave' or '' — the same values as the Leave dropdown.
+ */
+function detectLeave (text) {
+  if (HALF_DAY_PATTERNS.some(re => re.test(text))) return 'Half Day'
+  if (LEAVE_PATTERNS.some(re => re.test(text))) return 'Leave'
+  return ''
+}
+
+/** Shared work for both voice and text: figure out who, when and which session. */
+function prepare (msg) {
   const sender = identifySender(msg)
-  const phone = sender.id
   const when = new Date(Number(msg.messageTimestamp) * 1000)
   const { date, time, hour } = colomboParts(when)
+  const session = sessionFromHour(hour)
+  return { sender, date, time, session }
+}
 
-  const sessionByTime = sessionFromHour(hour)
-  if (!sessionByTime) {
-    console.log(`⏭️  ${phone} @ ${time} — dead zone, skipped`)
+async function save ({ senderId, name, date, session, kind, text }) {
+  const leaveType = detectLeave(text)
+  const result = await recordUpdate({ date, name, session, kind, text, leaveType })
+
+  if (result.matched) {
+    const leaveNote = leaveType ? ` 🏖️ ${leaveType}` : ''
+    console.log(`   ✅ saved — row ${result.row}, ${result.status}${leaveNote}`)
+  } else {
+    console.log('   ⚠️  Not in team.json — saved to the Unmatched tab')
+    console.log(`   ℹ️  Add "${senderId}" to the right person's "ids" in team.json`)
+  }
+}
+
+async function handleVoice (msg) {
+  const { sender, date, time, session } = prepare(msg)
+  if (!session) {
+    console.log(`⏭️  ${sender.id} @ ${time} — outside working hours, skipped`)
     return
   }
 
-  const name = sender.name || `Unknown (${phone})`
-  console.log(`🎤 ${name} — ${sessionByTime} @ ${time}`)
-  if (!sender.name) {
-    console.log(`   ℹ️  Add to roster.json:  "${phone}": "Name"`)
-    if (sender.lid && sender.phone) console.log(`      (LID: ${sender.lid})`)
-  }
+  const name = sender.name || `Unknown (${sender.id})`
+  console.log(`🎤 ${name} — ${session} @ ${time}`)
 
   try {
+    // Save the audio and queue it. Transcription happens one job at a time,
+    // so two voice notes sent together never hit Gemini at the same moment.
     const buffer = await downloadMediaMessage(msg, 'buffer', {})
-    const result = await transcribe(buffer)
-
-    await appendRow({
-      timestamp: when.toISOString(),
-      date,
-      time,
-      name,
-      phone,
-      sessionByTime,
-      sessionByAI: result.detected_session,
-      transcript: result.transcript,
-      audioQuality: result.audio_quality,
-      unclearCount: result.unclear_count,
-      duration: msg.message.audioMessage.seconds || '',
-      type: 'VOICE'
-    })
-
-    const flag = sessionByTime !== result.detected_session ? ' ⚠️ session mismatch' : ''
-    console.log(`   ✅ saved — ${result.audio_quality}, ${result.unclear_count} unclear${flag}`)
+    enqueueVoice(buffer, { senderId: sender.id, name, date, session, kind: 'Voice' })
   } catch (err) {
-    console.error(`   ❌ failed for ${name}:`, err.message)
-    // Save the audio so it can be retried later
-    fs.mkdirSync('./failed', { recursive: true })
-    try {
-      const buf = await downloadMediaMessage(msg, 'buffer', {})
-      fs.writeFileSync(`./failed/${phone}-${Date.now()}.ogg`, buf)
-    } catch {}
+    console.error('   ❌ Could not download the audio:', err.message)
   }
 }
 
 async function handleText (msg, text) {
-  const sender = identifySender(msg)
-  const phone = sender.id
-  const when = new Date(Number(msg.messageTimestamp) * 1000)
-  const { date, time, hour } = colomboParts(when)
-
-  const sessionByTime = sessionFromHour(hour)
-  if (!sessionByTime) {
-    console.log(`⏭️  ${phone} @ ${time} — dead zone, skipped`)
+  const { sender, date, time, session } = prepare(msg)
+  if (!session) {
+    console.log(`⏭️  ${sender.id} @ ${time} — dead zone, skipped`)
     return
   }
 
-  const name = sender.name || `Unknown (${phone})`
-  console.log(`💬 ${name} — ${sessionByTime} @ ${time}`)
-  if (!sender.name) {
-    console.log(`   ℹ️  Add to roster.json:  "${phone}": "Name"`)
-  }
+  console.log(`💬 ${sender.name || `Unknown (${sender.id})`} — ${session} @ ${time}`)
 
   try {
     // Text is saved exactly as written — no AI call needed
-    await appendRow({
-      timestamp: when.toISOString(),
+    await save({
+      senderId: sender.id,
+      name: sender.name || `Unknown (${sender.id})`,
       date,
-      time,
-      name,
-      phone,
-      sessionByTime,
-      sessionByAI: 'N/A',
-      transcript: text,
-      audioQuality: '-',
-      unclearCount: 0,
-      duration: '',
-      type: 'TEXT'
+      session,
+      kind: 'Text',
+      text
     })
-    console.log(`   ✅ saved — ${text.length} characters`)
   } catch (err) {
-    console.error(`   ❌ failed for ${name}:`, err.message)
+    console.error('   ❌ failed:', err.message)
   }
 }
 
 async function start () {
-  await ensureHeaders()
+  // Transcribed voice notes come back here and go straight to the sheet
+  startQueue(async ({ job, text }) => {
+    await save({
+      senderId: job.senderId,
+      name: job.name,
+      date: job.date,
+      session: job.session,
+      kind: job.kind,
+      text
+    })
+  })
 
   const { state, saveCreds } = await useMultiFileAuthState('./auth')
   const sock = makeWASocket({
@@ -208,7 +226,7 @@ async function start () {
       if (msg.key.fromMe) continue
 
       if (msg.message?.audioMessage) {
-        await handleVoice(msg, sock)
+        await handleVoice(msg)
         continue
       }
 
