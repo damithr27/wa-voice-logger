@@ -9,7 +9,7 @@ import qrcode from 'qrcode-terminal'
 import pino from 'pino'
 import fs from 'node:fs'
 
-import { recordUpdate } from './sheets.js'
+import { recordUpdate, checkAccess } from './sheets.js'
 import { enqueueVoice, startQueue } from './queue.js'
 
 const team = JSON.parse(fs.readFileSync('./team.json', 'utf8'))
@@ -23,7 +23,17 @@ const E_END = +process.env.EVENING_END || 24
 // Ignore very short messages like "ok" or a single emoji
 const MIN_TEXT_LENGTH = +process.env.MIN_TEXT_LENGTH || 10
 
+// Send a private thank-you to the sender once their update is saved.
+// While testing, REPLY_ONLY_TO limits this to one id so nobody else is messaged.
+const SEND_REPLY = process.env.SEND_REPLY !== 'false'
+const REPLY_ONLY_TO = (process.env.REPLY_ONLY_TO || '')
+  .split(',')
+  .map(x => x.trim())
+  .filter(Boolean)
+
 // Build a lookup of every id (phone number or LID) to the person's name
+let waSocket = null
+
 const nameById = new Map()
 for (const p of team) {
   for (const id of p.ids || []) nameById.set(String(id), p.name)
@@ -77,7 +87,18 @@ function identifySender (msg) {
   const name = (phone && nameById.get(phone)) || (lid && nameById.get(lid)) || null
   const id = phone || lid || candidates[0]?.split('@')[0] || 'unknown'
 
-  return { id, phone, lid, name }
+  // A private chat can only be opened with a real phone number, not a LID
+  const jid = phoneJid || null
+
+  return { id, phone, lid, name, jid }
+}
+
+/** Pull the most useful message out of an error object. */
+function errorDetail (err) {
+  return err?.response?.data?.error?.message
+    || err?.errors?.[0]?.message
+    || err?.message
+    || String(err)
 }
 
 /** Extract plain text from a message, if it has any. */
@@ -123,13 +144,38 @@ function prepare (msg) {
   return { sender, date, time, session }
 }
 
-async function save ({ senderId, name, date, session, kind, text }) {
+/**
+ * Send a short private thank-you to the person who sent the update.
+ * Never throws — a failed reply must not affect what was already saved.
+ */
+async function sendThankYou ({ senderJid, senderId, name, session, status }) {
+  if (!SEND_REPLY || !waSocket || !senderJid) return
+  if (REPLY_ONLY_TO.length && !REPLY_ONLY_TO.includes(senderId)) return
+
+  const when = session === 'MORNING' ? 'morning' : 'evening'
+  const firstName = name.split(/[\s.]+/).filter(Boolean).pop() || name
+
+  let message = `Thank you, ${firstName}. Your ${when} update has been recorded.`
+  if (status === 'Both Sent') {
+    message += '\nBoth your morning and evening updates are complete for today.'
+  }
+
+  try {
+    await waSocket.sendMessage(senderJid, { text: message })
+    console.log('   💬 Thank-you sent')
+  } catch (err) {
+    console.log('   ⚠️  Could not send the thank-you:', errorDetail(err))
+  }
+}
+
+async function save ({ senderId, senderJid, name, date, session, kind, text }) {
   const leaveType = detectLeave(text)
   const result = await recordUpdate({ date, name, session, kind, text, leaveType })
 
   if (result.matched) {
     const leaveNote = leaveType ? ` 🏖️ ${leaveType}` : ''
     console.log(`   ✅ saved — row ${result.row}, ${result.status}${leaveNote}`)
+    await sendThankYou({ senderJid, senderId, name, session, status: result.status })
   } else {
     console.log('   ⚠️  Not in team.json — saved to the Unmatched tab')
     console.log(`   ℹ️  Add "${senderId}" to the right person's "ids" in team.json`)
@@ -150,7 +196,14 @@ async function handleVoice (msg) {
     // Save the audio and queue it. Transcription happens one job at a time,
     // so two voice notes sent together never hit Gemini at the same moment.
     const buffer = await downloadMediaMessage(msg, 'buffer', {})
-    enqueueVoice(buffer, { senderId: sender.id, name, date, session, kind: 'Voice' })
+    enqueueVoice(buffer, {
+      senderId: sender.id,
+      senderJid: sender.jid,
+      name,
+      date,
+      session,
+      kind: 'Voice'
+    })
   } catch (err) {
     console.error('   ❌ Could not download the audio:', err.message)
   }
@@ -159,7 +212,7 @@ async function handleVoice (msg) {
 async function handleText (msg, text) {
   const { sender, date, time, session } = prepare(msg)
   if (!session) {
-    console.log(`⏭️  ${sender.id} @ ${time} — dead zone, skipped`)
+    console.log(`⏭️  ${sender.id} @ ${time} — outside working hours, skipped`)
     return
   }
 
@@ -169,6 +222,7 @@ async function handleText (msg, text) {
     // Text is saved exactly as written — no AI call needed
     await save({
       senderId: sender.id,
+      senderJid: sender.jid,
       name: sender.name || `Unknown (${sender.id})`,
       date,
       session,
@@ -176,15 +230,25 @@ async function handleText (msg, text) {
       text
     })
   } catch (err) {
-    console.error('   ❌ failed:', err.message)
+    console.error('   ❌ Could not save:', errorDetail(err))
   }
 }
 
 async function start () {
+  try {
+    await checkAccess()
+  } catch (err) {
+    console.error('❌ Cannot reach the Google Sheet:', errorDetail(err))
+    console.error('   Check SHEET_ID in .env, and that the sheet is shared')
+    console.error('   with the client_email from credentials.json as an Editor.')
+    process.exit(1)
+  }
+
   // Transcribed voice notes come back here and go straight to the sheet
   startQueue(async ({ job, text }) => {
     await save({
       senderId: job.senderId,
+      senderJid: job.senderJid,
       name: job.name,
       date: job.date,
       session: job.session,
@@ -200,6 +264,7 @@ async function start () {
     markOnlineOnConnect: false // Keep phone notifications working
   })
 
+  waSocket = sock
   sock.ev.on('creds.update', saveCreds)
 
   sock.ev.on('connection.update', ({ connection, lastDisconnect, qr }) => {
@@ -231,9 +296,15 @@ async function start () {
       }
 
       const text = extractText(msg)
-      if (text && text.trim().length >= MIN_TEXT_LENGTH) {
-        await handleText(msg, text.trim())
+      if (!text) continue
+
+      const trimmed = text.trim()
+      if (trimmed.length < MIN_TEXT_LENGTH) {
+        console.log(`⏭️  Text ignored — only ${trimmed.length} characters (minimum is ${MIN_TEXT_LENGTH})`)
+        continue
       }
+
+      await handleText(msg, trimmed)
     }
   })
 }

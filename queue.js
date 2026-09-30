@@ -6,10 +6,14 @@ const DIR = './pending'
 
 // How long to wait before each retry, in minutes.
 // After the last one the job is given up on and moved to ./failed.
-const BACKOFF_MINUTES = [1, 3, 10, 30, 60, 120]
+const BACKOFF_MINUTES = [0.5, 2, 5, 15, 30, 60, 120]
 
 // Smallest gap between two Gemini calls, so requests are never sent at once
 const MIN_GAP_MS = 2000
+
+// A job older than this is given up on, even if it has attempts left.
+// Stops yesterday's leftovers from being retried every time the bot starts.
+const MAX_AGE_HOURS = +process.env.QUEUE_MAX_AGE_HOURS || 6
 
 let onDone = null
 let running = false
@@ -22,7 +26,11 @@ function ensureDir () {
   fs.mkdirSync('./failed', { recursive: true })
 }
 
-/** Every job waiting on disk, oldest first. */
+/**
+ * Every job waiting on disk.
+ * Brand new jobs come first, so a message that just arrived is handled
+ * straight away instead of waiting behind an older one that keeps failing.
+ */
 function listJobs () {
   ensureDir()
   return fs.readdirSync(DIR)
@@ -35,7 +43,7 @@ function listJobs () {
       }
     })
     .filter(Boolean)
-    .sort((a, b) => a.createdAt - b.createdAt)
+    .sort((a, b) => a.attempts - b.attempts || a.createdAt - b.createdAt)
 }
 
 function saveJob (job) {
@@ -92,6 +100,12 @@ async function tick () {
       const audioPath = path.join(DIR, `${job.id}.ogg`)
       if (!fs.existsSync(audioPath)) { removeJob(job); continue }
 
+      const ageHours = (now - job.createdAt) / 3_600_000
+      if (ageHours > MAX_AGE_HOURS) {
+        giveUp(job, `Older than ${MAX_AGE_HOURS} hours`)
+        continue
+      }
+
       // Never fire two requests back to back
       const gap = MIN_GAP_MS - (Date.now() - lastCallAt)
       if (gap > 0) await sleep(gap)
@@ -118,7 +132,8 @@ async function tick () {
         job.nextTryAt = Date.now() + waitMin * 60_000
         job.lastError = String(err.message).slice(0, 200)
         saveJob(job)
-        console.log(`   ⏳ Failed — trying again in ${waitMin} min (${listJobs().length} in queue)`)
+        const waitText = waitMin < 1 ? `${waitMin * 60} sec` : `${waitMin} min`
+        console.log(`   ⏳ All models busy — trying again in ${waitText} (${listJobs().length} in queue)`)
       }
     }
   } finally {
@@ -135,9 +150,12 @@ export function startQueue (handler) {
   ensureDir()
 
   const waiting = listJobs().length
-  if (waiting) console.log(`📥 ${waiting} voice note(s) left over from last run`)
+  if (waiting) {
+    console.log(`📥 ${waiting} voice note(s) left over from last run`)
+    console.log('   (to throw them away instead, stop the bot and delete the pending folder)')
+  }
 
-  // Check every 30 seconds for jobs whose retry time has come
-  setInterval(tick, 30_000)
+  // Check every 15 seconds for jobs whose retry time has come
+  setInterval(tick, 15_000)
   tick()
 }

@@ -1,9 +1,15 @@
 import { GoogleGenAI } from '@google/genai'
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY })
-const MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash'
-// Backup model used when the main model is busy
-const FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || 'gemini-3.5-flash'
+// Models to try, in order. Set GEMINI_MODELS in .env as a comma separated
+// list to change them, e.g. GEMINI_MODELS=gemini-3.8-flash,gemini-3.5-flash
+const MODELS = (process.env.GEMINI_MODELS || 'gemini-3.8-flash,gemini-3.5-flash')
+  .split(',')
+  .map(m => m.trim())
+  .filter(Boolean)
+
+// Seconds to wait before each attempt after the first
+const GAP_SECONDS = 2
 
 // Temporary server-side errors that are safe to retry
 const RETRYABLE = [429, 500, 503, 504]
@@ -69,28 +75,31 @@ function errorCode (err) {
  * Retries briefly; longer retries are handled by the queue.
  */
 export async function transcribe (buffer) {
-  // Short, quick attempts only. Longer waits are handled by the queue,
-  // which retries after 1, 3, 10, 30, 60 and 120 minutes.
-  const plan = [
-    { model: MODEL, wait: 0 },
-    { model: MODEL, wait: 3000 },
-    { model: FALLBACK_MODEL, wait: 2000 }
-  ]
+  // Try every model once, quickly. If they are all busy the queue takes over
+  // and tries again later, so nothing is lost.
+  const plan = MODELS.map((model, i) => ({ model, wait: i === 0 ? 0 : GAP_SECONDS * 1000 }))
 
   let lastErr
   for (let i = 0; i < plan.length; i++) {
     const { model, wait } = plan[i]
-    if (wait) {
-      console.log(`   ⏳ Waiting ${wait / 1000}s before retrying (${model})...`)
-      await sleep(wait)
-    }
+    if (wait) await sleep(wait)
+
+    console.log(`   🤖 Trying ${model} (${i + 1}/${plan.length})...`)
+
     try {
       const result = await callModel(model, buffer)
-      if (model !== MODEL) console.log(`   ↪️  Succeeded with backup model (${model})`)
+      console.log(`   ↪️  ${model} worked`)
       return result
     } catch (err) {
       lastErr = err
       const code = errorCode(err)
+      const reason = code === 503 ? 'busy'
+        : code === 429 ? 'rate limited'
+        : code ? `error ${code}`
+        : 'failed'
+      console.log(`   ✖️  ${model} — ${reason}`)
+      if (code === 429) console.log(`      ${String(err.message).slice(0, 300)}`)
+
       // Errors like 400, 401, 403 are code/key problems — retrying won't help
       if (code && !RETRYABLE.includes(code)) throw err
     }
