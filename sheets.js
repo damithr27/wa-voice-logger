@@ -228,6 +228,13 @@ async function createTab (title) {
   console.log(`📄 Created tab "${title}" — ${team.length} people, dropdowns and colours applied`)
 }
 
+/** Check at startup that the sheet is reachable, so problems show up early. */
+export async function checkAccess () {
+  const api = await getApi()
+  const meta = await api.spreadsheets.get({ spreadsheetId: process.env.SHEET_ID })
+  console.log(`📗 Sheet connected: "${meta.data.properties.title}"`)
+}
+
 /**
  * Make sure today's tab exists and return a map of name -> row number.
  * Each day gets its own tab, named by date (e.g. 2026-09-25).
@@ -340,6 +347,36 @@ async function recordUnmatched ({ date, name, session, kind, text }) {
     insertDataOption: 'INSERT_ROWS',
     requestBody: { values: [[date, name, session, kind, text]] }
   })
+}
+
+/**
+ * Everyone who has not sent an update for this session yet.
+ * People marked as on leave are left out.
+ * session is 'MORNING' (column G) or 'EVENING' (column H).
+ */
+export async function getPending (date, session) {
+  const api = await getApi()
+  await getDayTab(date)
+
+  const res = await api.spreadsheets.values.get({
+    spreadsheetId: process.env.SHEET_ID,
+    range: `'${date}'!A2:I${team.length + 1}`
+  })
+
+  const rows = res.data.values || []
+  const column = session === 'MORNING' ? 6 : 7   // G or H
+  const pending = []
+
+  rows.forEach(r => {
+    const name = r[0]
+    const leave = r[2]
+    if (!name) return
+    if (leave && String(leave).trim()) return
+    if (r[column] && String(r[column]).trim()) return
+    pending.push(String(name).trim())
+  })
+
+  return pending
 }
 
 /**

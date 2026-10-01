@@ -11,14 +11,31 @@ import fs from 'node:fs'
 
 import { recordUpdate, checkAccess } from './sheets.js'
 import { enqueueVoice, startQueue } from './queue.js'
+import { startReminders } from './reminder.js'
 
 const team = JSON.parse(fs.readFileSync('./team.json', 'utf8'))
 const GROUP_ID = process.env.GROUP_ID
 
-const M_START = +process.env.MORNING_START || 5
-const M_END = +process.env.MORNING_END || 12
-const E_START = +process.env.EVENING_START || 13
-const E_END = +process.env.EVENING_END || 24
+/**
+ * Read a time from .env. Accepts a plain hour ("13") or HH:MM ("12:30"),
+ * and returns the number of minutes since midnight.
+ */
+function toMinutes (value, fallback) {
+  const raw = String(value ?? '').trim()
+  if (!raw) return fallback
+
+  const [h, m = '0'] = raw.split(':')
+  const hours = Number(h)
+  const mins = Number(m)
+  if (Number.isNaN(hours) || Number.isNaN(mins)) return fallback
+
+  return hours * 60 + mins
+}
+
+const M_START = toMinutes(process.env.MORNING_START, 5 * 60)
+const M_END = toMinutes(process.env.MORNING_END, 13 * 60)
+const E_START = toMinutes(process.env.EVENING_START, 13 * 60)
+const E_END = toMinutes(process.env.EVENING_END, 24 * 60)
 
 // Ignore very short messages like "ok" or a single emoji
 const MIN_TEXT_LENGTH = +process.env.MIN_TEXT_LENGTH || 10
@@ -33,6 +50,7 @@ const REPLY_ONLY_TO = (process.env.REPLY_ONLY_TO || '')
 
 // Build a lookup of every id (phone number or LID) to the person's name
 let waSocket = null
+let remindersStarted = false
 
 const nameById = new Map()
 for (const p of team) {
@@ -40,11 +58,12 @@ for (const p of team) {
 }
 console.log(`👥 ${team.length} people loaded, ${nameById.size} ids mapped`)
 
-/** Determine the session from the message hour (Asia/Colombo). */
-function sessionFromHour (hour) {
-  if (hour >= M_START && hour < M_END) return 'MORNING'
-  if (hour >= E_START && hour < E_END) return 'EVENING'
-  return null // 12–1 dead zone
+/** Determine the session from the message time (Asia/Colombo). */
+function sessionFromTime (hour, minute) {
+  const mins = hour * 60 + minute
+  if (mins >= M_START && mins < M_END) return 'MORNING'
+  if (mins >= E_START && mins < E_END) return 'EVENING'
+  return null // Outside working hours
 }
 
 function colomboParts (date) {
@@ -55,10 +74,11 @@ function colomboParts (date) {
     hour12: false
   })
   const p = Object.fromEntries(fmt.formatToParts(date).map(x => [x.type, x.value]))
-  return {
+    return {
     date: `${p.year}-${p.month}-${p.day}`,
     time: `${p.hour}:${p.minute}:${p.second}`,
-    hour: +p.hour
+    hour: +p.hour,
+    minute: +p.minute
   }
 }
 
@@ -139,8 +159,8 @@ function detectLeave (text) {
 function prepare (msg) {
   const sender = identifySender(msg)
   const when = new Date(Number(msg.messageTimestamp) * 1000)
-  const { date, time, hour } = colomboParts(when)
-  const session = sessionFromHour(hour)
+  const { date, time, hour, minute } = colomboParts(when)
+  const session = sessionFromTime(hour, minute)
   return { sender, date, time, session }
 }
 
@@ -266,6 +286,12 @@ async function start () {
 
   waSocket = sock
   sock.ev.on('creds.update', saveCreds)
+
+  // Reminders read the socket when they fire, so a reconnect is picked up
+  if (!remindersStarted) {
+    startReminders(() => waSocket)
+    remindersStarted = true
+  }
 
   sock.ev.on('connection.update', ({ connection, lastDisconnect, qr }) => {
     if (qr) {
