@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Daily Updates</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+Sinhala:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink: #10211B;
+    --paper: #F6F7F3;
+    --card: #FFFFFF;
+    --line: #E0E4DD;
+    --muted: #5E6B64;
+    --green: #2F9E6B;
+    --green-bg: #D4EDBC;
+    --orange-bg: #FFC8AA;
+    --yellow-bg: #FFE5A0;
+    --red: #B10202;
+    --pink-bg: #FFCFC9;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: Inter, 'Noto Sans Sinhala', system-ui, sans-serif;
+    font-size: 15px;
+    line-height: 1.5;
+  }
+
+  header {
+    background: var(--ink);
+    color: var(--paper);
+    padding: 20px 28px;
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    flex-wrap: wrap;
+  }
+  header h1 { font-size: 19px; margin: 0; font-weight: 600; }
+  header .spacer { flex: 1; }
+
+  .date-picker { display: flex; align-items: center; gap: 8px; }
+  .date-picker button, select, input[type=date] {
+    font-family: inherit; font-size: 14px;
+    background: #1D3A2E; color: var(--paper);
+    border: 1px solid #2F5244; border-radius: 8px;
+    padding: 7px 12px; cursor: pointer;
+  }
+  .date-picker button:hover { background: #26493A; }
+  .date-picker button:disabled { opacity: .35; cursor: default; }
+
+  #updated { font-size: 13px; color: #8FA399; }
+  #updated.loading { color: var(--green); }
+
+  main { padding: 24px 28px 60px; max-width: 1500px; margin: 0 auto; }
+
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+  .card {
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 12px; padding: 16px 18px; cursor: pointer;
+    transition: border-color .12s;
+  }
+  .card:hover { border-color: var(--green); }
+  .card.active { border-color: var(--green); box-shadow: 0 0 0 2px rgba(47,158,107,.18); }
+  .card .n { font-size: 30px; font-weight: 700; line-height: 1.1; }
+  .card .l { font-size: 13px; color: var(--muted); margin-top: 3px; }
+
+  .toolbar { display: flex; gap: 12px; margin: 22px 0 14px; flex-wrap: wrap; align-items: center; }
+  #search {
+    flex: 1; min-width: 220px; font-family: inherit; font-size: 14px;
+    padding: 10px 14px; border: 1px solid var(--line);
+    border-radius: 9px; background: var(--card); color: var(--ink);
+  }
+  #count { font-size: 13px; color: var(--muted); }
+
+  table { width: 100%; border-collapse: collapse; background: var(--card);
+          border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  th {
+    text-align: left; font-size: 12px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: .4px;
+    padding: 12px 14px; background: #EDF1EA;
+    border-bottom: 1px solid var(--line); white-space: nowrap;
+  }
+  td { padding: 13px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  tr.row { cursor: pointer; }
+  tr.row:hover td { background: #FAFBF8; }
+
+  .nm { font-weight: 600; }
+  .ds { font-size: 12.5px; color: var(--muted); }
+
+  .chip {
+    display: inline-block; padding: 3px 10px; border-radius: 20px;
+    font-size: 12.5px; font-weight: 600; white-space: nowrap;
+  }
+  .s-both   { background: var(--green-bg); }
+  .s-morn   { background: var(--orange-bg); }
+  .s-eve    { background: var(--yellow-bg); }
+  .s-not    { background: var(--red); color: #fff; }
+  .s-leave  { background: var(--pink-bg); }
+  .s-half   { background: var(--yellow-bg); }
+  .s-none   { background: #EDF1EA; color: var(--muted); }
+
+  .snip { color: var(--muted); font-size: 13.5px;
+          display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+          overflow: hidden; }
+  .dash { color: #B9C2BB; }
+
+  tr.detail td { background: #F8FAF6; padding: 0 14px 18px; }
+  .full { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; padding-top: 4px; }
+  .full h4 { margin: 0 0 6px; font-size: 12px; text-transform: uppercase;
+             letter-spacing: .4px; color: var(--muted); }
+  .full p { margin: 0; white-space: pre-wrap; font-size: 14px; }
+
+  .empty { text-align: center; padding: 60px 20px; color: var(--muted); }
+  .err { background: #FFF1EE; border: 1px solid #F3C4BA; color: #8A2E18;
+         padding: 14px 16px; border-radius: 10px; margin-bottom: 16px; font-size: 14px; }
+
+  @media (max-width: 760px) {
+    .full { grid-template-columns: 1fr; }
+    .hide-sm { display: none; }
+    main { padding: 18px 14px 50px; }
+    header { padding: 16px 14px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Daily Updates</h1>
+  <div class="date-picker">
+    <button id="prev" title="Previous day">&larr;</button>
+    <input type="date" id="date">
+    <button id="next" title="Next day">&rarr;</button>
+    <button id="todayBtn">Today</button>
+  </div>
+  <div class="spacer"></div>
+  <span id="updated">Loading&hellip;</span>
+</header>
+
+<main>
+  <div id="error"></div>
+
+  <div class="cards" id="cards"></div>
+
+  <div class="toolbar">
+    <input id="search" placeholder="Search by name or designation&hellip;" autocomplete="off">
+    <span id="count"></span>
+  </div>
+
+  <div id="table"></div>
+</main>
+
+<script>
+const REFRESH_MS = 20000
+
+let rows = []
+let filter = null
+let openRow = null
+let currentDate = null
+let timer = null
+
+const $ = id => document.getElementById(id)
+
+const STATUS = {
+  'Both Sent':    { cls: 's-both' },
+  'Morning Only': { cls: 's-morn' },
+  'Evening Only': { cls: 's-eve'  },
+  'Not Sent':     { cls: 's-not'  }
+}
+
+function esc (s) {
+  return String(s).replace(/[&<>"]/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+}
+
+function statusOf (r) {
+  if (r.status) return r.status
+  if (r.morning && r.evening) return 'Both Sent'
+  if (r.morning) return 'Morning Only'
+  if (r.evening) return 'Evening Only'
+  return 'Not Sent'
+}
+
+function render () {
+  const q = $('search').value.trim().toLowerCase()
+
+  const counts = { 'Both Sent': 0, 'Morning Only': 0, 'Evening Only': 0, 'Not Sent': 0, 'On leave': 0 }
+  rows.forEach(r => {
+    if (r.leave) counts['On leave']++
+    counts[statusOf(r)] = (counts[statusOf(r)] || 0) + 1
+  })
+
+  $('cards').innerHTML = Object.entries(counts).map(([k, v]) => `
+    <div class="card ${filter === k ? 'active' : ''}" data-f="${esc(k)}">
+      <div class="n">${v}</div><div class="l">${esc(k)}</div>
+    </div>`).join('')
+
+  const shown = rows.filter(r => {
+    if (filter === 'On leave' && !r.leave) return false
+    if (filter && filter !== 'On leave' && statusOf(r) !== filter) return false
+    if (q && !(r.name + ' ' + r.designation).toLowerCase().includes(q)) return false
+    return true
+  })
+
+  $('count').textContent = shown.length + ' of ' + rows.length + ' people'
+
+  if (!rows.length) {
+    $('table').innerHTML = '<div class="empty">No tab for this day yet.<br>' +
+      'It is created when the first message of the day arrives.</div>'
+    return
+  }
+  if (!shown.length) {
+    $('table').innerHTML = '<div class="empty">Nothing matches that filter.</div>'
+    return
+  }
+
+  const body = shown.map((r, i) => {
+    const st = statusOf(r)
+    const cls = (STATUS[st] || {}).cls || 's-none'
+    const leaveChip = r.leave
+      ? `<span class="chip ${r.leave === 'Half Day' ? 's-half' : 's-leave'}">${esc(r.leave)}</span>`
+      : ''
+    const open = openRow === r.name
+
+    const line = (t) => t
+      ? `<div class="snip">${esc(t)}</div>`
+      : '<span class="dash">&mdash;</span>'
+
+    return `
+      <tr class="row" data-n="${esc(r.name)}">
+        <td>
+          <div class="nm">${esc(r.name)}</div>
+          <div class="ds">${esc(r.designation)}</div>
+        </td>
+        <td><span class="chip ${cls}">${esc(st)}</span> ${leaveChip}</td>
+        <td class="hide-sm">${r.kind ? esc(r.kind) : '<span class="dash">&mdash;</span>'}</td>
+        <td>${line(r.morning)}</td>
+        <td>${line(r.evening)}</td>
+      </tr>
+      ${open ? `
+      <tr class="detail"><td colspan="5">
+        <div class="full">
+          <div><h4>Morning target</h4><p>${r.morning ? esc(r.morning) : '\u2014'}</p></div>
+          <div><h4>Evening achievement</h4><p>${r.evening ? esc(r.evening) : '\u2014'}</p></div>
+        </div>
+      </td></tr>` : ''}`
+  }).join('')
+
+  $('table').innerHTML = `
+    <table>
+      <thead><tr>
+        <th style="width:24%">Name</th>
+        <th style="width:16%">Status</th>
+        <th class="hide-sm" style="width:8%">Type</th>
+        <th style="width:26%">Morning</th>
+        <th style="width:26%">Evening</th>
+      </tr></thead>
+      <tbody>${body}</tbody>
+    </table>`
+}
+
+async function load (date, quiet) {
+  if (!quiet) $('updated').className = 'loading'
+  if (!quiet) $('updated').textContent = 'Loading\u2026'
+
+  try {
+    const res = await fetch('/api/day?date=' + encodeURIComponent(date))
+    const data = await res.json()
+    if (data.error) throw new Error(data.error)
+
+    rows = data.rows
+    currentDate = data.date
+    $('date').value = data.date
+    $('date').max = data.today
+    $('next').disabled = data.date >= data.today
+    $('error').innerHTML = ''
+
+    const t = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    $('updated').className = ''
+    $('updated').textContent = 'Updated ' + t
+    render()
+  } catch (err) {
+    $('updated').className = ''
+    $('updated').textContent = 'Update failed'
+    $('error').innerHTML = '<div class="err">Could not read the sheet: ' +
+      esc(err.message) + '</div>'
+  }
+}
+
+function shift (days) {
+  const d = new Date(currentDate + 'T12:00:00')
+  d.setDate(d.getDate() + days)
+  load(d.toISOString().slice(0, 10))
+}
+
+$('cards').addEventListener('click', e => {
+  const card = e.target.closest('.card')
+  if (!card) return
+  filter = filter === card.dataset.f ? null : card.dataset.f
+  render()
+})
+
+$('table').addEventListener('click', e => {
+  const tr = e.target.closest('tr.row')
+  if (!tr) return
+  openRow = openRow === tr.dataset.n ? null : tr.dataset.n
+  render()
+})
+
+$('search').addEventListener('input', render)
+$('prev').addEventListener('click', () => shift(-1))
+$('next').addEventListener('click', () => shift(1))
+$('todayBtn').addEventListener('click', () => load($('date').max))
+$('date').addEventListener('change', e => load(e.target.value))
+
+load('')
+timer = setInterval(() => load(currentDate, true), REFRESH_MS)
+</script>
+</body>
+</html>

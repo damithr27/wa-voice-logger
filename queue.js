@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { transcribe } from './gemini.js'
+import { archive } from './audio.js'
 
 const DIR = './pending'
 
@@ -118,7 +119,12 @@ async function tick () {
         lastCallAt = Date.now()
         const result = await transcribe(buffer)
 
-        await onDone({ job, text: result.transcript })
+        await onDone({ job, text: result.transcript, textEn: result.translation || '' })
+
+        // Keep the voice note so it can be played back in the dashboard.
+        // Each recording stores its own transcript and translation.
+        // archive() moves the file, so removeJob only clears the job record.
+        archive(job, audioPath, result.transcript, result.translation)
         removeJob(job)
       } catch (err) {
         lastCallAt = Date.now()

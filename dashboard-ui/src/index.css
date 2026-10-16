@@ -1,0 +1,64 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+@import 'tailwindcss';
+
+@theme inline {
+  --color-gcf-green-950: #052e16;
+  --color-gcf-green-900: #0f2d1a;
+  --color-gcf-green-800: #14532d;
+  --color-gcf-green-700: #15803d;
+  --color-gcf-green-600: #16a34a;
+  --color-gcf-green-500: #22c55e;
+  --color-gcf-green-100: #dcfce7;
+  --color-gcf-green-50: #f0fdf4;
+  --color-gcf-blue-800: #1e3a8a;
+  --color-gcf-blue-600: #2563eb;
+  --color-gcf-blue-500: #3b82f6;
+  --color-gcf-blue-100: #dbeafe;
+  --color-gcf-gold-600: #d97706;
+  --color-gcf-gold-500: #f59e0b;
+  --color-gcf-gold-100: #fef3c7;
+}
+
+:root {
+  --background: #f8fafc;
+  --foreground: #0f172a;
+  --card: #ffffff;
+  --card-foreground: #0f172a;
+  --primary: #16a34a;
+  --primary-foreground: #ffffff;
+  --secondary: #f1f5f9;
+  --secondary-foreground: #334155;
+  --muted: #f1f5f9;
+  --muted-foreground: #64748b;
+  --accent: #2563eb;
+  --accent-foreground: #ffffff;
+  --border: #e2e8f0;
+  --ring: #16a34a;
+  --radius: 0.5rem;
+}
+
+* {
+  font-family: 'Inter', system-ui, sans-serif;
+  box-sizing: border-box;
+}
+
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+  margin: 0;
+}
+
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 2px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}

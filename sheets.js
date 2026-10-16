@@ -6,16 +6,21 @@ const team = JSON.parse(fs.readFileSync('./team.json', 'utf8'))
 // Headers exactly as they appear in the Demo sheet, trailing spaces included
 const HEADERS = [
   'Name', 'Designation ', 'Leave', 'On', 'Text/ Voice', 'Off',
-  'Morning Target ', 'Evening Achievement ', 'Daily Update Status'
+  'Morning Target ', 'Evening Achievement ', 'Daily Update Status',
+  'Morning Target (English)', 'Evening Achievement (English)'
 ]
 
 // A Name | B Designation | C Leave | D On | E Text/Voice | F Off
 // G Morning Target | H Evening Achievement | I Daily Update Status
+// J Morning Target (English) | K Evening Achievement (English)
+//
+// G and H hold what was actually said, in Sinhala or English.
+// J and K hold the English translation of the same thing.
 
 const HEADER_GREEN = '#6AA84F'
 
 // Column widths in pixels, roughly matching the Demo sheet
-const WIDTHS = [260, 400, 110, 85, 100, 70, 460, 620, 130]
+const WIDTHS = [260, 400, 110, 85, 100, 70, 460, 620, 130, 460, 620]
 
 /**
  * Dropdown options per column, with the chip colour for each value.
@@ -73,10 +78,27 @@ async function getApi () {
   return sheetsApi
 }
 
+// The tab list is asked for on every read. Google counts each of those
+// against a per-minute quota, so it is held for a few seconds. Anything
+// that adds a tab clears it straight away.
+const TABS_TTL_MS = 30_000
+let tabsCache = { at: 0, names: null }
+
+function forgetTabs () {
+  tabsCache = { at: 0, names: null }
+}
+
 async function listTabs () {
+  if (tabsCache.names && Date.now() - tabsCache.at < TABS_TTL_MS) {
+    return tabsCache.names
+  }
+
   const api = await getApi()
   const meta = await api.spreadsheets.get({ spreadsheetId: process.env.SHEET_ID })
-  return meta.data.sheets.map(s => s.properties.title)
+  const names = meta.data.sheets.map(s => s.properties.title)
+
+  tabsCache = { at: Date.now(), names }
+  return names
 }
 
 /**
@@ -123,12 +145,25 @@ function formatRequests (sheetId, rowCount) {
     })
   })
 
-  // Wrap the long text columns so the transcript stays readable
+  // Wrap the long text columns so the transcript stays readable.
+  // G, H hold what was said; J, K hold the English translation.
+  for (const [from, to] of [[6, 8], [9, 11]]) {
+    requests.push({
+      repeatCell: {
+        range: { sheetId, startRowIndex: 1, endRowIndex: lastRow, startColumnIndex: from, endColumnIndex: to },
+        cell: { userEnteredFormat: { wrapStrategy: 'WRAP', verticalAlignment: 'TOP' } },
+        fields: 'userEnteredFormat(wrapStrategy,verticalAlignment)'
+      }
+    })
+  }
+
+  // Give the two English columns a light grey tint, so it is clear at a
+  // glance that they are the translation and not the original words
   requests.push({
     repeatCell: {
-      range: { sheetId, startRowIndex: 1, endRowIndex: lastRow, startColumnIndex: 6, endColumnIndex: 8 },
-      cell: { userEnteredFormat: { wrapStrategy: 'WRAP', verticalAlignment: 'TOP' } },
-      fields: 'userEnteredFormat(wrapStrategy,verticalAlignment)'
+      range: { sheetId, startRowIndex: 1, endRowIndex: lastRow, startColumnIndex: 9, endColumnIndex: 11 },
+      cell: { userEnteredFormat: { textFormat: { italic: true } } },
+      fields: 'userEnteredFormat(textFormat)'
     }
   })
 
@@ -209,6 +244,9 @@ async function createTab (title) {
     }
   })
 
+  // A new tab exists now, so the cached list is out of date
+  forgetTabs()
+
   const sheetId = added.data.replies[0].addSheet.properties.sheetId
 
   // Header row plus every team member's name and designation
@@ -239,11 +277,85 @@ export async function checkAccess () {
  * Make sure today's tab exists and return a map of name -> row number.
  * Each day gets its own tab, named by date (e.g. 2026-09-25).
  */
+/**
+ * A tab created before the English columns existed has no header in J and K.
+ * Fill them in once, so an older day keeps working without being rebuilt.
+ */
+async function upgradeHeaders (title) {
+  const api = await getApi()
+
+  const res = await api.spreadsheets.values.get({
+    spreadsheetId: process.env.SHEET_ID,
+    range: `'${title}'!A1:K1`
+  })
+  const head = res.data.values?.[0] || []
+  if (head[9] && head[10]) return
+
+  await api.spreadsheets.values.update({
+    spreadsheetId: process.env.SHEET_ID,
+    range: `'${title}'!J1:K1`,
+    valueInputOption: 'RAW',
+    requestBody: { values: [[HEADERS[9], HEADERS[10]]] }
+  })
+
+  const meta = await api.spreadsheets.get({ spreadsheetId: process.env.SHEET_ID })
+  const sheet = meta.data.sheets.find(s => s.properties.title === title)
+  if (!sheet) return
+  const sheetId = sheet.properties.sheetId
+  const lastRow = team.length + 1
+
+  await api.spreadsheets.batchUpdate({
+    spreadsheetId: process.env.SHEET_ID,
+    requestBody: {
+      requests: [
+        {
+          repeatCell: {
+            range: { sheetId, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 9, endColumnIndex: 11 },
+            cell: {
+              userEnteredFormat: {
+                backgroundColor: rgb(HEADER_GREEN),
+                horizontalAlignment: 'CENTER',
+                verticalAlignment: 'MIDDLE',
+                wrapStrategy: 'WRAP'
+              }
+            },
+            fields: 'userEnteredFormat(backgroundColor,horizontalAlignment,verticalAlignment,wrapStrategy)'
+          }
+        },
+        {
+          repeatCell: {
+            range: { sheetId, startRowIndex: 1, endRowIndex: lastRow, startColumnIndex: 9, endColumnIndex: 11 },
+            cell: { userEnteredFormat: { wrapStrategy: 'WRAP', verticalAlignment: 'TOP', textFormat: { italic: true } } },
+            fields: 'userEnteredFormat(wrapStrategy,verticalAlignment,textFormat)'
+          }
+        },
+        {
+          updateDimensionProperties: {
+            range: { sheetId, dimension: 'COLUMNS', startIndex: 9, endIndex: 10 },
+            properties: { pixelSize: WIDTHS[9] },
+            fields: 'pixelSize'
+          }
+        },
+        {
+          updateDimensionProperties: {
+            range: { sheetId, dimension: 'COLUMNS', startIndex: 10, endIndex: 11 },
+            properties: { pixelSize: WIDTHS[10] },
+            fields: 'pixelSize'
+          }
+        }
+      ]
+    }
+  })
+
+  console.log(`📄 Added the English columns to tab "${title}"`)
+}
+
 async function getDayTab (date) {
   if (dayCache.has(date)) return dayCache.get(date)
 
   const tabs = await listTabs()
   if (!tabs.includes(date)) await createTab(date)
+  else await upgradeHeaders(date)
 
   const api = await getApi()
   const res = await api.spreadsheets.values.get({
@@ -270,27 +382,61 @@ function statusOf (morning, evening) {
 }
 
 /**
+ * Add one more update underneath the ones already in a cell.
+ *
+ * Someone may send three or four voice notes for the same session. The first
+ * one is written on its own; from the second onwards every entry is numbered,
+ * so they can be told apart and matched with the players in the dashboard.
+ */
+function appendBlock (old, add) {
+  const cur = String(old || '').trim()
+  const next = String(add || '').trim()
+
+  if (!cur) return next
+  if (!next) return cur
+
+  // Split what is already there back into entries and renumber the lot,
+  // so the numbering stays right no matter how many arrive
+  const blocks = cur
+    .split(/\n{2,}/)
+    .map(b => b.replace(/^\d+\.\s+/, '').trim())
+    .filter(Boolean)
+
+  blocks.push(next)
+  return blocks.map((b, i) => `${i + 1}. ${b}`).join('\n\n')
+}
+
+/**
  * Record one update from a team member into today's tab.
  * If the person already submitted for that session, the new text is appended
- * below the old one instead of overwriting it.
+ * below the old one instead of overwriting it. The English translation is
+ * kept in the same way, in columns J and K.
  */
-export async function recordUpdate ({ date, name, session, kind, text, leaveType }) {
+export async function recordUpdate ({ date, name, session, kind, text, textEn, leaveType }) {
   const api = await getApi()
   const rowByName = await getDayTab(date)
   const row = rowByName.get(name)
 
   if (!row) {
-    await recordUnmatched({ date, name, session, kind, text })
+    await recordUnmatched({ date, name, session, kind, text, textEn })
     return { matched: false }
   }
 
   // Read the row as it is now, so nothing already there is lost
   const res = await api.spreadsheets.values.get({
     spreadsheetId: process.env.SHEET_ID,
-    range: `'${date}'!C${row}:I${row}`
+    range: `'${date}'!C${row}:K${row}`
   })
   const cur = res.data.values?.[0] || []
-  const [leaveCur = '', , kindCur = '', , morningCur = '', eveningCur = ''] = cur
+
+  // C=0 Leave, D=1 On, E=2 Text/Voice, F=3 Off, G=4 Morning, H=5 Evening,
+  // I=6 Status, J=7 Morning English, K=8 Evening English
+  const leaveCur = cur[0] || ''
+  const kindCur = cur[2] || ''
+  const morningCur = cur[4] || ''
+  const eveningCur = cur[5] || ''
+  const morningEnCur = cur[7] || ''
+  const eveningEnCur = cur[8] || ''
 
   // Once set, the leave marking stays for the rest of the day
   const leave = (leaveCur && String(leaveCur).trim()) ? leaveCur : (leaveType || '')
@@ -298,13 +444,20 @@ export async function recordUpdate ({ date, name, session, kind, text, leaveType
   // The dropdown only offers Text or Voice, so Voice wins once it is used
   const kindCell = (kindCur === 'Voice' || kind === 'Voice') ? 'Voice' : kind
 
-  const join = (old, add) => (old && String(old).trim() ? `${old}\n\n${add}` : add)
-  const morning = session === 'MORNING' ? join(morningCur, text) : morningCur
-  const evening = session === 'EVENING' ? join(eveningCur, text) : eveningCur
+  const isMorning = session === 'MORNING'
+
+  const morning = isMorning ? appendBlock(morningCur, text) : morningCur
+  const evening = isMorning ? eveningCur : appendBlock(eveningCur, text)
+
+  // The translation is appended even when it is empty, so entry 3 in column J
+  // still lines up with entry 3 in column G
+  const english = textEn || '(translation not available)'
+  const morningEn = isMorning ? appendBlock(morningEnCur, english) : morningEnCur
+  const eveningEn = isMorning ? eveningEnCur : appendBlock(eveningEnCur, english)
 
   await api.spreadsheets.values.update({
     spreadsheetId: process.env.SHEET_ID,
-    range: `'${date}'!C${row}:I${row}`,
+    range: `'${date}'!C${row}:K${row}`,
     valueInputOption: 'RAW',
     requestBody: {
       values: [[
@@ -314,7 +467,9 @@ export async function recordUpdate ({ date, name, session, kind, text, leaveType
         '',                           // F Off — cleared, they did submit
         morning,                      // G Morning Target
         evening,                      // H Evening Achievement
-        statusOf(morning, evening)    // I Daily Update Status
+        statusOf(morning, evening),   // I Daily Update Status
+        morningEn,                    // J Morning Target (English)
+        eveningEn                     // K Evening Achievement (English)
       ]]
     }
   })
@@ -323,7 +478,7 @@ export async function recordUpdate ({ date, name, session, kind, text, leaveType
 }
 
 /** Anyone whose number is not in team.json goes to a separate tab. */
-async function recordUnmatched ({ date, name, session, kind, text }) {
+async function recordUnmatched ({ date, name, session, kind, text, textEn }) {
   const api = await getApi()
   const tabs = await listTabs()
 
@@ -332,20 +487,21 @@ async function recordUnmatched ({ date, name, session, kind, text }) {
       spreadsheetId: process.env.SHEET_ID,
       requestBody: { requests: [{ addSheet: { properties: { title: 'Unmatched' } } }] }
     })
+    forgetTabs()
     await api.spreadsheets.values.update({
       spreadsheetId: process.env.SHEET_ID,
       range: "'Unmatched'!A1",
       valueInputOption: 'RAW',
-      requestBody: { values: [['Date', 'Sender', 'Session', 'Type', 'Message']] }
+      requestBody: { values: [['Date', 'Sender', 'Session', 'Type', 'Message', 'English']] }
     })
   }
 
   await api.spreadsheets.values.append({
     spreadsheetId: process.env.SHEET_ID,
-    range: "'Unmatched'!A:E",
+    range: "'Unmatched'!A:F",
     valueInputOption: 'RAW',
     insertDataOption: 'INSERT_ROWS',
-    requestBody: { values: [[date, name, session, kind, text]] }
+    requestBody: { values: [[date, name, session, kind, text, textEn || '']] }
   })
 }
 
@@ -377,6 +533,47 @@ export async function getPending (date, session) {
   })
 
   return pending
+}
+
+/**
+ * Every row of one day's tab, for the dashboard.
+ * Returns exists:false if that day has no tab yet.
+ */
+export async function getDay (date) {
+  const api = await getApi()
+
+  const tabs = await listTabs()
+  if (!tabs.includes(date)) return { exists: false, rows: [] }
+
+  const res = await api.spreadsheets.values.get({
+    spreadsheetId: process.env.SHEET_ID,
+    range: `'${date}'!A2:K${team.length + 1}`
+  })
+
+  const rows = (res.data.values || [])
+    .filter(r => r[0])
+    .map(r => ({
+      name: r[0] || '',
+      designation: r[1] || '',
+      leave: r[2] || '',
+      on: r[3] || '',
+      kind: r[4] || '',
+      off: r[5] || '',
+      morning: r[6] || '',
+      evening: r[7] || '',
+      status: r[8] || '',
+      // Tabs created before the English columns existed simply return nothing
+      morningEn: r[9] || '',
+      eveningEn: r[10] || ''
+    }))
+
+  return { exists: true, rows }
+}
+
+/** The day tabs that exist, newest first. */
+export async function listDays () {
+  const tabs = await listTabs()
+  return tabs.filter(t => /^\d{4}-\d{2}-\d{2}$/.test(t)).sort().reverse()
 }
 
 /**
